@@ -4,18 +4,22 @@ num_players = 200
 team_size = 5
 num_games = 10000
 k_factor = 32
+starting_elo = (num_games / num_players) * k_factor * 0.75
+player_elo_range = 5000
+team_elo_range = 5000
 
 players = []
 queued = []
 players_unqueued = []
 full_teams = []
 
-ranks = ["Bronze", "Silver", "Gold", "Platinum", "Diamond"]
-ranked_players = [[], [], [], [], []]
-playing_elo_range = 400
+ranks = ["Bronze 1", "Bronze 2", "Bronze 3", "Silver 1", "Silver 2", "Silver 3", "Gold 1", "Gold 2", "Gold 3",
+         "Platinum 1", "Platinum 2", "Platinum 3", "Diamond 1", "Diamond 2", "Diamond 3"]
+ranked_players = [[], [], [], [], [], [], [], [], [], [], [], [], [], [], []]
+ranks_upper_bound = starting_elo*2
+print(ranks_upper_bound)
 
-ranks_upper_bound = 1500
-ranks_size = ranks_upper_bound / (len(ranks)-1)
+ranks_size = ranks_upper_bound / (len(ranks))
 
 
 class Player:
@@ -23,7 +27,7 @@ class Player:
         self.name = name
         self.avg_skill = random.randint(1, 1000)
         self.std_dev = random.randint(1, 200)
-        self.elo = 1000
+        self.elo = starting_elo
         self.games_played = 0
         self.rank = 0
         ranked_players[0].append(self)
@@ -40,6 +44,8 @@ class Player:
 
         if self.elo > ranks_upper_bound:
             self.rank = len(ranks)-1
+        elif self.elo < 0:
+            self.elo = 0
         else:
             for i in range(len(ranks)):
                 if self.elo < ((i+1) * ranks_size):
@@ -77,7 +83,7 @@ class Team:
     def __str__(self):
         s = ""
         for player in self.players:
-            s += "{:>10} {:>4}, ".format(ranks[player.rank], str(player.elo))
+            s += "{:<10} {:>10} {:>4}, ".format(player.name, ranks[player.rank], str(player.elo))
         s += str(self.elo)
         return s
 
@@ -92,10 +98,9 @@ class Game:
     def __init__(self, team_a, team_b):
         self.team_a = team_a
         self.team_b = team_b
-        #print("Game Found")
-        #print(team_a)
-        #print(team_b)
-        #print()
+        print("Game Found")
+        print(team_a)
+        print(team_b)
 
     def play(self):
         # Calculate Expected Scores
@@ -110,17 +115,21 @@ class Game:
         for player in self.team_b:
             score_b += player.gen_game_score()
 
+        print("Score A: "+str(int(score_a)))
+        print("Score B: " + str(int(score_b)))
         # Turn Scores to 1, 0.5 and 0 (win, draw, loss)
         if score_a > score_b:
             score_a = 1
             score_b = 0
+            print("A WINS")
         elif score_b > score_a:
             score_b = 1
             score_a = 0
+            print("B WINS")
         else:
             score_a = 0.5
             score_b = 0.5
-
+        print()
         rating_change_a = k_factor * (score_a - expected_a)
         rating_change_b = k_factor * (score_b - expected_b)
 
@@ -167,7 +176,7 @@ def check_for_games():
     full_team_a = None
     full_team_b = None
     for i, full_team in enumerate(full_teams):
-        if i + 1 < len(full_teams) and abs(full_team.elo - full_teams[i + 1].elo) < 100:
+        if i + 1 < len(full_teams) and abs(full_team.elo - full_teams[i + 1].elo) < team_elo_range:
             full_team_a = full_team
             full_team_b = full_teams[i + 1]
 
@@ -187,7 +196,7 @@ def check_for_games():
 
 def valid_team_merge(team_a, team_b):
     if len(team_a) + len(team_b) <= team_size:  # If team is within size
-        if abs(team_a.elo - team_b.elo) < playing_elo_range:  # If elo within range
+        if abs(team_a.elo - team_b.elo) < player_elo_range:  # If elo within range
             return True
     return False
 
@@ -243,6 +252,10 @@ def main():
     players.sort(key=lambda p: p.elo, reverse=True)
     print("\nPLAYERS AFTER PLAYING {} GAMES".format(num_games))
     print_players()
+
+    for i, rank in enumerate(ranks):
+        print(rank, ": ", len(ranked_players[i]))
+
 
 
 if __name__ == "__main__":
