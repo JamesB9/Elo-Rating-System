@@ -1,106 +1,120 @@
 import random
+from enum import Enum
+from elo_settings import *
+from sim_settings import *
 
-num_players = 200
-team_size = 5
-num_games = 10000
-k_factor = 32
-starting_elo = (num_games / num_players) * k_factor * 0.75
-player_elo_range = 5000
-team_elo_range = 5000
+
+class Outcome(Enum):
+    WIN = 1
+    LOSS = 2
+    DRAW = 3
+
 
 players = []
 queued = []
 players_unqueued = []
 full_teams = []
 
-ranks = ["Bronze 1", "Bronze 2", "Bronze 3", "Silver 1", "Silver 2", "Silver 3", "Gold 1", "Gold 2", "Gold 3",
-         "Platinum 1", "Platinum 2", "Platinum 3", "Diamond 1", "Diamond 2", "Diamond 3"]
-ranked_players = [[], [], [], [], [], [], [], [], [], [], [], [], [], [], []]
-ranks_upper_bound = starting_elo*2
-print(ranks_upper_bound)
-
-ranks_size = ranks_upper_bound / (len(ranks))
-
 
 class Player:
     def __init__(self, name):
+        # Player Sim Stats
         self.name = name
         self.avg_skill = random.randint(1, 1000)
         self.std_dev = random.randint(1, 200)
+
+        # Elo / Rank
         self.elo = starting_elo
-        self.games_played = 0
-        self.rank = 0
-        ranked_players[0].append(self)
-        self.update_rank(0)
+        self.rank = int(self.elo / elo_per_rank)
+
+        # Wins / Losses / Draws
+        self.wins = 0
+        self.losses = 0
+        self.draws = 0
+        self.win_streak_count = 0  # Number of consecutive wins
 
     def gen_game_score(self):
-        self.games_played += 1
         score = int(random.normalvariate(self.avg_skill, self.std_dev))
-        return score if score < 1000 else 1000
+        return score if score > 0 else 0
 
-    def update_rank(self, elo_change):
-        self.elo += elo_change
-        ranked_players[self.rank].remove(self)
+    def update_rank(self, elo_change, outcome):
+        # Win Streak Multiplier
+        if self.win_streak_count > 2:
+            elo_change *= win_streak_multiplier
 
-        if self.elo > ranks_upper_bound:
-            self.rank = len(ranks)-1
-        elif self.elo < 0:
+        # Initial Games Multiplier
+        if not self.get_games_played() > initial_games_count:
+            dif = initial_games_multiplier - 1
+            elo_change *= initial_games_multiplier - (dif * self.get_games_played() / initial_games_count)
+
+        # Change Elo
+        self.elo += int(elo_change)
+        if self.elo < 0:
             self.elo = 0
-        else:
-            for i in range(len(ranks)):
-                if self.elo < ((i+1) * ranks_size):
-                    self.rank = i
-                    break
-        ranked_players[self.rank].append(self)
+
+        # Update Rank
+        self.rank = int(self.elo / elo_per_rank)
+        self.rank = len(ranks) - 1 if self.rank >= len(ranks) else self.rank
+
+        # Update Win/Loss
+        if outcome == outcome.WIN:
+            self.wins += 1
+            self.win_streak_count += 1
+        elif outcome == outcome.DRAW:
+            self.draws += 1
+            self.win_streak_count = 0
+        elif outcome == outcome.LOSS:
+            self.losses += 1
+            self.win_streak_count = 0
+
+    def get_games_played(self):
+        return self.wins + self.draws + self.losses
 
     def __str__(self):
-        return 'Player {self.name}, {self.elo}, {self.avg_skill}, {self.std_dev}, {self.games_played}'.format(self=self)
+        return '{self.name}, {self.elo}'.format(self=self)
 
 
 class Team:
-    def __init__(self, *players):
-        self.players = list(players)
+    def __init__(self, *members):
+        self.members = list(members)
         self.elo = 0
         self.calculate_avg_elo()
 
-    def add_player(self, player):
-        self.players.append(player)
+    def add_member(self, player):
+        self.members.append(player)
         self.calculate_avg_elo()
 
     def calculate_avg_elo(self):
         elo = 0
-        for player in self.players:
+        for player in self.members:
             elo += player.elo
-        self.elo = elo / len(self.players)
+        self.elo = elo / len(self.members)
 
     def __iadd__(self, other):
-        self.players.extend(other.players)
+        self.members.extend(other.members)
         self.calculate_avg_elo()
 
     def __contains__(self, item):
-        return item in self.players
+        return item in self.members
 
     def __str__(self):
         s = ""
-        for player in self.players:
+        for player in self.members:
             s += "{:<10} {:>10} {:>4}, ".format(player.name, ranks[player.rank], str(player.elo))
         s += str(self.elo)
         return s
 
     def __iter__(self):
-        return self.players.__iter__()
+        return self.members.__iter__()
 
     def __len__(self):
-        return len(self.players)
+        return len(self.members)
 
 
 class Game:
     def __init__(self, team_a, team_b):
         self.team_a = team_a
         self.team_b = team_b
-        print("Game Found")
-        print(team_a)
-        print(team_b)
 
     def play(self):
         # Calculate Expected Scores
@@ -115,47 +129,50 @@ class Game:
         for player in self.team_b:
             score_b += player.gen_game_score()
 
-        print("Score A: "+str(int(score_a)))
-        print("Score B: " + str(int(score_b)))
+        # Decide Outcome
+        outcome_a = Outcome.WIN if score_a > score_b else Outcome.LOSS if score_a < score_b else Outcome.DRAW
+        outcome_b = Outcome.WIN if score_b > score_a else Outcome.LOSS if score_b < score_a else Outcome.DRAW
+
         # Turn Scores to 1, 0.5 and 0 (win, draw, loss)
         if score_a > score_b:
             score_a = 1
             score_b = 0
-            print("A WINS")
         elif score_b > score_a:
             score_b = 1
             score_a = 0
-            print("B WINS")
         else:
             score_a = 0.5
             score_b = 0.5
-        print()
+
+        # Calculate Rating Change
         rating_change_a = k_factor * (score_a - expected_a)
         rating_change_b = k_factor * (score_b - expected_b)
 
+        # Update each player's elo
         for player in self.team_a:
-            player.update_rank(int(rating_change_a))
+            player.update_rank(rating_change_a, outcome_a)
         for player in self.team_b:
-            player.update_rank(int(rating_change_b))
+            player.update_rank(rating_change_b, outcome_b)
 
 
 def print_players():
-    print(
-        "{:>10} {:>15} {:>10} {:>10} {:>10} {:>10} {:>15}".format("Rank", "Name", "Rank", "Elo", "Avg Score", "Sigma", "Games Played"))
+    players.sort(key=lambda p: p.elo, reverse=True)
+
+    # Print Table Column Headers
+    print("{:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10}".format(
+        "Index", "Name", "Rank", "Elo", "Avg Score", "Sigma", "Games Played", "W/L/D"))
+
+    # Print Table Contents
     for i, player in enumerate(players):
-        print("{:>10} {:>15} {:>10} {:>10} {:>10} {:>10} {:>15}".format(i, player.name, ranks[player.rank],player.elo, player.avg_skill,
-                                                                 player.std_dev,
-                                                                 player.games_played))
-
-
-def queue(team):
-    queued.append(team)
+        print("{:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10}".format(
+            i, player.name, ranks[player.rank], player.elo, player.avg_skill, player.std_dev, player.get_games_played(),
+            str(player.wins) + "/" + str(player.losses) + "/" + str(player.draws)))
 
 
 def match_make(team):
-    if len(team) == team_size:
+    if len(team) == team_size:  # If party size is a full team
         full_teams.append(team)
-    else:
+    else:  # If party size is less than a full team
         merged_into = -1
         for i, qteam in enumerate(queued):
             if valid_team_merge(qteam, team):
@@ -173,25 +190,29 @@ def match_make(team):
 def check_for_games():
     # Match Full Teams
     full_teams.sort(key=lambda t: t.elo, reverse=True)
-    full_team_a = None
-    full_team_b = None
+
     for i, full_team in enumerate(full_teams):
         if i + 1 < len(full_teams) and abs(full_team.elo - full_teams[i + 1].elo) < team_elo_range:
+            # Select Teams
             full_team_a = full_team
             full_team_b = full_teams[i + 1]
 
-    if full_team_a is not None and full_team_b is not None:
-        game = Game(full_team_a, full_team_b)
-        game.play()
-        full_teams.remove(full_team_a)
-        full_teams.remove(full_team_b)
+            # Play Game
+            game = Game(full_team_a, full_team_b)
+            game.play()
 
-        for player in full_team_a:
-            players_unqueued.append(player)
-        for player in full_team_b:
-            players_unqueued.append(player)
-        return 1
-    return 0
+            # Remove Full Teams from queue
+            full_teams.remove(full_team_a)
+            full_teams.remove(full_team_b)
+            # Un queue all players
+            for player in full_team_a:
+                players_unqueued.append(player)
+            for player in full_team_b:
+                players_unqueued.append(player)
+
+            return 1  # Return 1 game played
+
+    return 0  # Return 0 games played
 
 
 def valid_team_merge(team_a, team_b):
@@ -199,6 +220,13 @@ def valid_team_merge(team_a, team_b):
         if abs(team_a.elo - team_b.elo) < player_elo_range:  # If elo within range
             return True
     return False
+
+
+def match_make_all_players():
+    random.shuffle(players_unqueued)
+    for i in range(len(players_unqueued)):
+        match_make(Team(players_unqueued[0]))
+        players_unqueued.remove(players_unqueued[0])
 
 
 def main():
@@ -209,9 +237,7 @@ def main():
         players_unqueued.append(player)
 
     # Match Make Players (find teammates)
-    for player in players_unqueued:
-        match_make(Team(player))
-        players_unqueued.remove(player)
+    match_make_all_players()
 
     # Play Games and randomly search players again (once game finished)
     game_count = 0
@@ -219,43 +245,10 @@ def main():
         games_played = check_for_games()
         game_count += games_played
 
-        if random.random() < 0.1 or games_played == 0:
-            if games_played == 0 and len(players_unqueued) == 0:
-                print("FAILED")
-            for player in players_unqueued:
-                match_make(Team(player))
-                players_unqueued.remove(player)
+        if games_played == 0:  # No Games could be found (out of players or too different in skill)
+            match_make_all_players()  # Re-fill queue with players
 
-
-    shroud = Player("-=SHROUD=-")
-    shroud.avg_skill = 1000
-    shroud.std_dev = 5
-    players.append(shroud)
-    players_unqueued.append(shroud)
-    match_make(Team(shroud))
-    players_unqueued.remove(shroud)
-
-    # Play Games and randomly search players again (once game finished)
-    game_count = 0
-    while game_count < num_games:
-        games_played = check_for_games()
-        game_count += games_played
-
-        if random.random() < 0.1 or games_played == 0:
-            if games_played == 0 and len(players_unqueued) == 0:
-                print("FAILED")
-            for player in players_unqueued:
-                match_make(Team(player))
-                players_unqueued.remove(player)
-
-
-    players.sort(key=lambda p: p.elo, reverse=True)
-    print("\nPLAYERS AFTER PLAYING {} GAMES".format(num_games))
     print_players()
-
-    for i, rank in enumerate(ranks):
-        print(rank, ": ", len(ranked_players[i]))
-
 
 
 if __name__ == "__main__":
