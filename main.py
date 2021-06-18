@@ -1,19 +1,40 @@
-import random
+import random, datetime
 from enum import Enum
 from elo_settings import *
 from sim_settings import *
+
+# LOGGING
+time = str(datetime.datetime.now())
+filename = "logs/" + time.replace(":", ".") + ".log"
+logFile = open(filename, "w")
+log = "LOG " + str(time) + "\n"
+log += "Simulation Settings: \n" \
+       "Number of Players: {} \n" \
+       "Team Sizes: {} \n" \
+       "Games per Player: {} \n" \
+       "\nElo System Settings: \n" \
+       "Elo Per Rank: {} \n" \
+       "K Factor: {} \n" \
+       "Win Streak Multiplayer: {} \n" \
+       "Initial Games Multiplier: {} \n" \
+       "Initial Games Count: {} \n" \
+       "Consider Game Closeness: {} \n" \
+       "Consider Player Scores: {} \n\n".format(num_players, team_size, games_per_player, elo_per_rank, k_factor,
+                                                win_streak_multiplier, initial_games_multiplier, initial_games_count,
+                                                consider_game_closeness, consider_player_score)
+
+# LISTS
+
+players = []
+queued = []
+players_unqueued = []
+full_teams = []
 
 
 class Outcome(Enum):
     WIN = 1
     LOSS = 2
     DRAW = 3
-
-
-players = []
-queued = []
-players_unqueued = []
-full_teams = []
 
 
 class Player:
@@ -35,6 +56,7 @@ class Player:
 
         # Prev Score
         self.score = 0
+        self.elo_change = 0
 
     def gen_game_score(self):
         score = int(random.normalvariate(self.avg_skill, self.std_dev))
@@ -43,7 +65,7 @@ class Player:
 
     def update_rank(self, elo_change, outcome):
         # Win Streak Multiplier
-        if self.win_streak_count > 2:
+        if self.win_streak_count >= win_streak_min:
             elo_change *= win_streak_multiplier
 
         # Initial Games Multiplier
@@ -52,7 +74,8 @@ class Player:
             elo_change *= initial_games_multiplier - (dif * self.get_games_played() / initial_games_count)
 
         # Change Elo
-        self.elo += int(elo_change)
+        self.elo += round(elo_change)
+        self.elo_change = round(elo_change)
         if self.elo < 0:
             self.elo = 0
 
@@ -115,16 +138,37 @@ class Team:
         return len(self.members)
 
 
+def normalise_scores(score_a, score_b):
+    # Turn Scores to 1, 0.5 and 0 (win, draw, loss)
+    if consider_game_closeness:
+        score_a = score_a / ((score_b + 0.01) * 2)  # +0.01 to ensure divisor is never 0
+        if score_a > 1:
+            score_a = 1
+        score_b = 1 - score_a
+    else:
+        if score_a > score_b:
+            score_a = 1
+            score_b = 0
+        elif score_b > score_a:
+            score_b = 1
+            score_a = 0
+        else:
+            score_a = 0.5
+            score_b = 0.5
+
+    return score_a, score_b
+
+
 class Game:
     def __init__(self, team_a, team_b):
         self.team_a = team_a
         self.team_b = team_b
+        self.average_score_a = 0
+        self.average_score_b = 0
+        self.outcome_a = None
+        self.outcome_b = None
 
     def play(self):
-        # Calculate Expected Scores
-        expected_a = 1 / (1 + pow(10, (self.team_b.elo - self.team_a.elo) / 400))
-        expected_b = 1 - expected_a
-
         # Generate Scores
         score_a = 0
         score_b = 0
@@ -134,76 +178,126 @@ class Game:
             score_b += player.gen_game_score()
 
         # Average Scores
-        average_score_a = score_a / team_size
-        average_score_b = score_b / team_size
+        self.average_score_a = score_a / team_size
+        self.average_score_b = score_b / team_size
 
         # Decide Outcome
-        outcome_a = Outcome.WIN if score_a > score_b else Outcome.LOSS if score_a < score_b else Outcome.DRAW
-        outcome_b = Outcome.WIN if score_b > score_a else Outcome.LOSS if score_b < score_a else Outcome.DRAW
+        self.outcome_a = Outcome.WIN if score_a > score_b else Outcome.LOSS if score_a < score_b else Outcome.DRAW
+        self.outcome_b = Outcome.WIN if score_b > score_a else Outcome.LOSS if score_b < score_a else Outcome.DRAW
 
-        # Turn Scores to 1, 0.5 and 0 (win, draw, loss)
-        if consider_game_closeness:
-            score_a = score_a / ((score_b + 0.01) * 2)  # +0.01 to ensure divisor is never 0
-            if score_a > 1:
-                score_a = 1
-            score_b = 1 - score_a
+        # Change Player Elo
+        if consider_player_score:
+            self.update_elo_consider_player_score(self.average_score_a, self.average_score_b)
         else:
-            if score_a > score_b:
-                score_a = 1
-                score_b = 0
-            elif score_b > score_a:
-                score_b = 1
-                score_a = 0
-            else:
-                score_a = 0.5
-                score_b = 0.5
+            self.update_elo(score_a, score_b)
 
+        self.log_leaderboard()
+
+    def update_elo(self, score_a, score_b):
+        # Turn Scores to 1, 0.5 and 0 (win, draw, loss)
+        score_a, score_b = normalise_scores(score_a, score_b)
+        # Calculate Expected Scores
+        expected_a = 1 / (1 + pow(10, (self.team_b.elo - self.team_a.elo) / elo_dif_10x_skill))
+        expected_b = 1 - expected_a
         # Calculate Rating Change
         rating_change_a = k_factor * (score_a - expected_a)
         rating_change_b = k_factor * (score_b - expected_b)
 
         # Update each player's elo
-        if consider_player_score:
-            for player in self.team_a:
-                elo_change = player_score_consideration(player, rating_change_a, average_score_b)
-                player.update_rank(elo_change, outcome_a)
-            for player in self.team_b:
-                elo_change = player_score_consideration(player, rating_change_b, average_score_a)
-                player.update_rank(elo_change, outcome_b)
+        for player in self.team_a:
+            player.update_rank(rating_change_a, self.outcome_a)
+        for player in self.team_b:
+            player.update_rank(rating_change_b, self.outcome_b)
+
+    def update_elo_consider_player_score(self, score_a, score_b):
+        # Update each player's elo
+        for player in self.team_a:
+            # Calculate Expected Scores
+            expected = 1 / (1 + pow(10, (self.team_b.elo - player.elo) / elo_dif_10x_skill))
+            # Score
+            score, unused_score_b = normalise_scores(player.score, score_b)  # unused_score_b is throw away variable
+            # Calculate Rating Change
+            rating_change = k_factor * (score - expected)
+            # Ensure rating_change isn't positive for a loss and negative for a win
+            if self.outcome_a == Outcome.WIN and rating_change < 0:
+                rating_change = elo_change_lower_bound
+            elif self.outcome_a == Outcome.LOSS and rating_change > 0:
+                rating_change = -elo_change_lower_bound
+
+            # Update player elo
+            player.update_rank(rating_change, self.outcome_a)
+
+        for player in self.team_b:
+            # Calculate Expected Scores
+            expected = 1 / (1 + pow(10, (self.team_a.elo - player.elo) / elo_dif_10x_skill))
+            # Score
+            score, unused_score_a = normalise_scores(player.score, score_a)  # unused_score_b is throw away variable
+            # Calculate Rating Change
+            rating_change = k_factor * (score - expected)
+            # Ensure rating_change isn't positive for a loss and negative for a win
+            if self.outcome_b == Outcome.WIN and rating_change < 0:
+                rating_change = elo_change_lower_bound
+            elif self.outcome_b == Outcome.LOSS and rating_change > 0:
+                rating_change = -elo_change_lower_bound
+            # Update player elo
+            player.update_rank(rating_change, self.outcome_b)
+
+    def log_leaderboard(self):
+        global log
+        # Game Header
+        leaderboard = "\nTeam A ({}) VS Team B ({}) \n".format(self.team_a.elo, self.team_b.elo)
+        # Game Outcome
+        if self.outcome_a == Outcome.WIN:
+            leaderboard += "Winner: TEAM A  -  {} to {} \n".format(self.average_score_a, self.average_score_b)
+        elif self.outcome_a == Outcome.LOSS:
+            leaderboard += "Winner: TEAM B  -  {} to {} \n".format(self.average_score_b, self.average_score_a)
         else:
-            for player in self.team_a:
-                player.update_rank(rating_change_a, outcome_a)
-            for player in self.team_b:
-                player.update_rank(rating_change_b, outcome_b)
+            leaderboard += "DRAW  -  {} to {} \n".format(self.average_score_a, self.average_score_b)
 
-
-def player_score_consideration(player, elo_change, avg_score_opponent):
-
-    if elo_change > 0 and player.score < avg_score_opponent:  # If player won the game and got carried
-        perc_dif = player.score / avg_score_opponent
-        perc_dif = 2 if perc_dif > 2 else 1 if perc_dif < 1 else perc_dif
-    elif elo_change < 0 and player.score > avg_score_opponent:  # If player lost the game but did better than opponents
-        perc_dif = avg_score_opponent / player.score
-        perc_dif = 2 if perc_dif > 2 else 0.5 if perc_dif < 0.5 else perc_dif
-    else:
-        perc_dif = 1
-
-    return elo_change * perc_dif
+        # Column Headers
+        leaderboard += "{:<6} {:<10} {:>10} {:>10} {:>15} {:>10} {:>10} \n".format("Team", "Name", "Avg Skill", "Score",
+                                                                                   "Rank", "Elo", "Elo +/-")
+        # Sort Players
+        self.team_a.members.sort(key=lambda p: p.score, reverse=True)
+        self.team_b.members.sort(key=lambda p: p.score, reverse=True)
+        # Print Player Information
+        for player in self.team_a:
+            extra_detail = "  "
+            if player.win_streak_count >= win_streak_min and win_streak_multiplier > 1:
+                extra_detail += " s_x" + str(win_streak_multiplier)
+            if player.get_games_played() < initial_games_count and initial_games_multiplier > 1:
+                extra_detail += " g_x" + str(initial_games_multiplier)
+            leaderboard += "{:<6} {:<10} {:>10} {:>10} {:>15} {:>10} {:>10} {:<10}\n".format(
+                "A", player.name, player.avg_skill, player.score, ranks[player.rank], player.elo, player.elo_change,
+                extra_detail)
+        leaderboard += "\n"
+        for player in self.team_b:
+            extra_detail = "  "
+            if player.win_streak_count >= win_streak_min and win_streak_multiplier > 1:
+                extra_detail += " s_x" + str(player.win_streak_count)
+            if player.get_games_played() < initial_games_count and initial_games_multiplier > 1:
+                extra_detail += " g_x" + str(initial_games_multiplier)
+            leaderboard += "{:<6} {:<10} {:>10} {:>10} {:>15} {:>10} {:>10} {:<10}\n".format(
+                "B", player.name, player.avg_skill, player.score, ranks[player.rank], player.elo, player.elo_change,
+                extra_detail)
+        log += leaderboard
 
 
 def print_players():
+    global log
     players.sort(key=lambda p: p.elo, reverse=True)
-
     # Print Table Column Headers
-    print("{:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10}".format(
-        "Index", "Name", "Rank", "Elo", "Avg Score", "Sigma", "Games Played", "W/L/D"))
+    table = "\nTable of Players: \n {:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10} \n".format(
+        "Index", "Name", "Rank", "Elo", "Avg Skill", "Sigma", "Games Played", "W/L/D")
 
     # Print Table Contents
     for i, player in enumerate(players):
-        print("{:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10}".format(
+        table += "{:>10} {:>15} {:>15} {:>10} {:>10} {:>10} {:>15} {:>10} \n".format(
             (i + 1), player.name, ranks[player.rank], player.elo, player.avg_skill, player.std_dev,
             player.get_games_played(),
-            str(player.wins) + "/" + str(player.losses) + "/" + str(player.draws)))
+            str(player.wins) + "/" + str(player.losses) + "/" + str(player.draws))
+
+    log += table
 
 
 def match_make(team):
@@ -226,7 +320,8 @@ def match_make(team):
 
 def check_for_games():
     # Match Full Teams
-    full_teams.sort(key=lambda t: t.elo, reverse=True)
+    #full_teams.sort(key=lambda t: t.elo, reverse=True)
+    random.shuffle(full_teams)
 
     for i, full_team in enumerate(full_teams):
         if i + 1 < len(full_teams) and abs(full_team.elo - full_teams[i + 1].elo) < team_elo_range:
@@ -273,6 +368,8 @@ def main():
         players.append(player)
         players_unqueued.append(player)
 
+    print_players()
+
     # Match Make Players (find teammates)
     match_make_all_players()
 
@@ -290,3 +387,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    logFile.write(log)
+    logFile.close()
